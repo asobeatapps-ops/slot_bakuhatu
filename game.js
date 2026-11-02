@@ -53,6 +53,72 @@ function beginFlight(result){
   }
   flightRaf=requestAnimationFrame(frame);
 }
+// Altitude-driven fly-bys. All objects are background scenery, never collision
+// targets; they do not modify scoring, camera motion, or the five-second ascent.
+const FLYBYS=[
+  {kind:'birds',alt:180,x:.23,size:1.1},{kind:'birds',alt:520,x:.76,size:.85},
+  {kind:'plane',alt:2400,x:.66,size:1},{kind:'plane',alt:6900,x:.27,size:.75},
+  {kind:'satellite',alt:15500,x:.73,size:1},{kind:'satellite',alt:47000,x:.24,size:.75},
+  {kind:'planet',alt:110000,x:.78,size:1,color:'#dc8261'},
+  {kind:'planet',alt:310000,x:.22,size:1.25,color:'#8fb4ff'},
+  {kind:'planet',alt:690000,x:.72,size:1.45,color:'#d6a7ef'}
+];
+function drawFlybys(ctx,w,hh,altitude,total,apex){
+  if(total<=0)return;
+  const time=apex?1:altitude/Math.max(1,total);
+  for(let i=0;i<FLYBYS.length;i++){
+    const o=FLYBYS[i];if(total<o.alt*.72)continue;
+    // A world-space window: objects rush from ahead of the slot to below it.
+    const range=Math.max(450,o.alt*.52);
+    const offset=(altitude-o.alt)/range;
+    if(Math.abs(offset)>1.3)continue;
+    const y=hh*.58+offset*hh*.77;
+    const x=w*o.x+Math.sin(i*4.13)*w*.06;
+    const proximity=Math.max(0,1-Math.abs(offset)*.72);
+    const scale=o.size*(.42+proximity*.75);
+    ctx.save();ctx.translate(x,y);ctx.scale(scale,scale);
+    if(o.kind==='birds'){
+      ctx.strokeStyle='#172b3c';ctx.lineWidth=3.5;ctx.lineCap='round';
+      for(let b=0;b<4;b++){
+        const bx=(b-1.5)*25,by=Math.sin(b*2.2+i)*12;
+        const flap=Math.sin(time*100+b*1.8)*5;
+        ctx.beginPath();ctx.moveTo(bx-13,by-3+flap);ctx.quadraticCurveTo(bx-6,by-10,bx,by);
+        ctx.quadraticCurveTo(bx+6,by-10,bx+13,by-3-flap);ctx.stroke();
+      }
+    }else if(o.kind==='plane'){
+      ctx.rotate(-.16);ctx.shadowColor='#d5f5ff';ctx.shadowBlur=14;
+      ctx.fillStyle='#e9f3fa';ctx.beginPath();ctx.moveTo(-67,0);ctx.lineTo(66,-4);
+      ctx.lineTo(75,0);ctx.lineTo(65,5);ctx.lineTo(-67,6);ctx.closePath();ctx.fill();
+      ctx.fillStyle='#b7d9f0';ctx.beginPath();ctx.moveTo(-6,0);ctx.lineTo(21,-31);
+      ctx.lineTo(34,-31);ctx.lineTo(20,1);ctx.lineTo(29,30);ctx.lineTo(16,30);ctx.closePath();ctx.fill();
+      ctx.fillStyle='#e34f59';ctx.fillRect(-55,-15,19,16);
+      ctx.fillStyle='#2e5776';for(let j=0;j<7;j++)ctx.fillRect(-24+j*10,-3,4,3);
+    }else if(o.kind==='satellite'){
+      ctx.rotate(.25+time*4);ctx.shadowColor='#b5e9ff';ctx.shadowBlur=15;
+      ctx.fillStyle='#3c78bd';ctx.fillRect(-64,-17,48,34);ctx.fillRect(16,-17,48,34);
+      ctx.strokeStyle='#8cd7ff';ctx.lineWidth=2;
+      for(let q=-60;q<64;q+=12){ctx.beginPath();ctx.moveTo(q,-17);ctx.lineTo(q,17);ctx.stroke()}
+      ctx.fillStyle='#d4dce5';ctx.fillRect(-15,-20,30,40);
+      ctx.fillStyle='#f8b856';ctx.fillRect(-10,-13,20,26);
+      ctx.strokeStyle='#e9f5ff';ctx.beginPath();ctx.moveTo(0,-20);ctx.lineTo(10,-37);ctx.stroke();
+      ctx.beginPath();ctx.arc(11,-39,7,0,Math.PI*2);ctx.stroke();
+    }else{
+      const r=48;ctx.shadowColor=o.color;ctx.shadowBlur=32;
+      const grad=ctx.createRadialGradient(-17,-18,2,0,0,r);
+      grad.addColorStop(0,'#fff4da');grad.addColorStop(.22,o.color);grad.addColorStop(1,'#141d42');
+      ctx.fillStyle=grad;ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
+      ctx.strokeStyle='rgba(255,255,255,.35)';ctx.lineWidth=5;
+      ctx.beginPath();ctx.ellipse(0,0,r*1.7,r*.36,-.25,0,Math.PI*2);ctx.stroke();
+      ctx.fillStyle='rgba(255,255,255,.20)';ctx.beginPath();ctx.ellipse(-13,-10,18,7,.3,0,Math.PI*2);ctx.fill();
+    }
+    ctx.restore();
+    // A trailing streak emphasizes that the player has overtaken the object.
+    if(!apex&&offset>0&&offset<.9){
+      ctx.strokeStyle=`rgba(196,236,255,${(1-offset)*.32})`;
+      ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,y-25*scale);ctx.lineTo(x,y-80*scale);ctx.stroke();
+    }
+  }
+}
 // Camera-space rendering: the city recedes in perspective instead of remaining
 // pinned to the viewport. All effects are visual only; scoring is unchanged.
 function drawFlight(ctx,canvas,p,h,total,gold,falling=0,atApex=false){
@@ -111,6 +177,7 @@ function drawFlight(ctx,canvas,p,h,total,gold,falling=0,atApex=false){
       const r=i%11===0?2:1;ctx.fillRect(x,y,r,r);
     }
   }
+  drawFlybys(ctx,w,hh,h,total,atApex);
   const cx=w/2,baseY=total===0?hh*.72:hh*.58;
   const machineY=baseY+(atApex?falling*falling*hh*.77:Math.sin(progress*30)*5);
   // Large converging high-speed streaks; freeze at the apex, none during fall.
