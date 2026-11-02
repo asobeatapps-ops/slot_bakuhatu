@@ -34,7 +34,6 @@ const ASCENT_MS=5000, FALL_MS=1000;
 function beginFlight(result){
   show('flightScreen');
   $('bonusLabel').textContent=result.is777?'BIG BONUS!':result.height===0?'BOOM!':'爆発！！';
-  $('flightSub').textContent=result.height===0?'何しに来たん？':'ぶっ飛べ！！';
   const begin=performance.now(),canvas=$('flightCanvas'),ctx=canvas.getContext('2d');
   const duration=result.height===0?250:ASCENT_MS+FALL_MS;
   function frame(now){
@@ -48,53 +47,111 @@ function beginFlight(result){
     // Keep the altitude HUD at the achieved maximum while the camera is fixed.
     const height=atApex?result.height:Math.round(result.height*ease);
     $('flightHeight').textContent=height.toLocaleString()+'m';
-    $('flightSub').textContent=atApex?'落下中！！':result.height===0?'何しに来たん？':'ぶっ飛べ！！';
     drawFlight(ctx,canvas,ascent,height,result.height,result.is777,falling,atApex);
     if(elapsed<duration)flightRaf=requestAnimationFrame(frame);
     else showResult(result);
   }
   flightRaf=requestAnimationFrame(frame);
 }
+// Camera-space rendering: the city recedes in perspective instead of remaining
+// pinned to the viewport. All effects are visual only; scoring is unchanged.
 function drawFlight(ctx,canvas,p,h,total,gold,falling=0,atApex=false){
   const dpr=Math.min(devicePixelRatio||1,2),w=canvas.clientWidth,hh=canvas.clientHeight;
+  if(!w||!hh)return;
   if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(hh*dpr)){
     canvas.width=Math.round(w*dpr);canvas.height=Math.round(hh*dpr);
   }
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  const sky=h<1000?['#6bc7ff','#d5f5ff']:h<10000?['#2365ba','#98d7fa']:['#090824','#19113e'];
-  const gr=ctx.createLinearGradient(0,0,0,hh);gr.addColorStop(0,sky[0]);gr.addColorStop(1,sky[1]);
-  ctx.fillStyle=gr;ctx.fillRect(0,0,w,hh);
-  // During the one-second fall, scenery and camera are frozen at the apex.
-  const sceneMotion=atApex?1:p;
-  if(h>=10000){
-    ctx.fillStyle='#ffffffbb';for(let i=0;i<70;i++){
-      const x=(i*113.7)%w,y=(i*67.9+sceneMotion*220)%hh;ctx.fillRect(x,y,1.8,1.8);
+  const progress=atApex?1:p,flight=total>0&&!atApex;
+  const sky=h<1000?['#58b6f7','#e2f8ff']:h<10000?['#1654a7','#8cc4f5']:['#05071c','#201348'];
+  const bg=ctx.createLinearGradient(0,0,0,hh);bg.addColorStop(0,sky[0]);bg.addColorStop(1,sky[1]);
+  ctx.fillStyle=bg;ctx.fillRect(0,0,w,hh);
+  // Vignette adds cinematic depth.
+  const vignette=ctx.createRadialGradient(w*.5,hh*.47,w*.06,w*.5,hh*.47,hh*.8);
+  vignette.addColorStop(0,'#00000000');vignette.addColorStop(1,'#01000eaa');
+  ctx.fillStyle=vignette;ctx.fillRect(0,0,w,hh);
+  const cityEnd=Math.min(1,progress*4.5);
+  // A complete city layer scales and drops towards the horizon as the camera climbs.
+  if(total===0||cityEnd<1){
+    const scale=total===0?1:Math.pow(1-cityEnd,2.5);
+    const ground=hh*(.88+cityEnd*.42);
+    ctx.save();ctx.translate(w*.5,ground);ctx.scale(Math.max(.001,scale),Math.max(.001,scale));
+    ctx.fillStyle='#252b46';ctx.fillRect(-w*1.2,-8,w*2.4,hh*.65);
+    for(let i=0;i<27;i++){
+      const bw=w/15, x=(i-13.5)*bw, bh=80+((i*53+17)%190);
+      ctx.fillStyle=i%3===0?'#283349':i%3===1?'#3c405c':'#20273c';
+      ctx.fillRect(x,-bh,bw*.93,bh);
+      ctx.fillStyle='#ffe7a177';
+      for(let yy=12;yy<bh-8;yy+=19)for(let xx=5;xx<bw*.9;xx+=13){
+        if((i*13+yy+xx)%5<3)ctx.fillRect(x+xx,-bh+yy,4,7);
+      }
     }
-  }else{
-    ctx.fillStyle='#ffffff99';for(let i=0;i<8;i++){
-      const x=(i*93+20)%w,y=((i*125+sceneMotion*850)%(hh+150))-70;
-      ctx.beginPath();ctx.ellipse(x,y,50,18,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+  // Independent near and far cloud layers: fast movement, scaling and perspective.
+  if(total>0){
+    for(let layer=0;layer<3;layer++){
+      const speed=[2.1,4.6,8.5][layer],size=[25,47,85][layer];
+      for(let i=0;i<16;i++){
+        const seed=i*73.83+layer*119.13;
+        const x=((seed*3.17)% (w+200))-100;
+        const y=((seed*1.71+progress*hh*speed)%(hh+size*3))-size*1.5;
+        const alpha=h>=10000?.045:h>=1000?.16:.27;
+        ctx.fillStyle=`rgba(242,251,255,${alpha})`;
+        ctx.beginPath();ctx.ellipse(x,y,size*(1+layer*.15),size*.3,0,0,Math.PI*2);ctx.fill();
+        ctx.beginPath();ctx.ellipse(x-size*.38,y-size*.10,size*.6,size*.3,0,0,Math.PI*2);ctx.fill();
+      }
     }
   }
-  if(h<1000){ctx.fillStyle='#55586c';for(let i=0;i<14;i++){
-    const x=i*w/13,base=hh-((i*41)%110);ctx.fillRect(x,base,w/14,hh-base);
-  }}
-  // y = y0 + 1/2*a*t^2: smooth gravitational acceleration from zero velocity.
-  // The camera stays still; only the slot machine descends.
-  const y0=total===0?hh*.72:hh*.62;
-  const y=y0+(atApex?falling*falling*hh*.70:Math.sin(p*25)*6);
-  ctx.save();ctx.translate(w/2,y);
-  ctx.rotate(atApex?falling*falling*.42:Math.sin(p*28)*.07);
-  ctx.fillStyle='#2c204b';ctx.fillRect(-58,-43,116,89);
-  ctx.fillStyle=gold?'#ffd75b':'#ff5c77';ctx.fillRect(-54,-47,108,83);
-  ctx.fillStyle='#fff';ctx.fillRect(-42,-29,84,51);
-  ctx.font='bold 32px system-ui';ctx.textAlign='center';ctx.fillStyle='#ef3148';ctx.fillText('777',0,9);ctx.restore();
-  if(!atApex&&p<.16){const r=30+p*800;ctx.strokeStyle=gold?'#ffdb56':'#ff9b46';ctx.lineWidth=9*(1-p/.16);ctx.beginPath();ctx.arc(w/2,y,r,0,Math.PI*2);ctx.stroke()}
-  if(total>0&&!atApex){ctx.strokeStyle='#ffffff80';ctx.lineWidth=3;for(let i=0;i<14;i++){
-    const x=(i*79)%w;ctx.beginPath();ctx.moveTo(x,((i*91+p*1200)%hh));ctx.lineTo(x,((i*91+p*1200)%hh)+50);ctx.stroke();
-  }}
+  if(h>=6000){
+    const starOpacity=Math.min(1,(h-6000)/4000);
+    for(let i=0;i<120;i++){
+      const x=(i*137.17+41)%w,y=(i*97.23+17+progress*hh*.9)%hh;
+      ctx.fillStyle=`rgba(255,255,255,${starOpacity*(.35+(i%4)*.16)})`;
+      const r=i%11===0?2:1;ctx.fillRect(x,y,r,r);
+    }
+  }
+  const cx=w/2,baseY=total===0?hh*.72:hh*.58;
+  const machineY=baseY+(atApex?falling*falling*hh*.77:Math.sin(progress*30)*5);
+  // Large converging high-speed streaks; freeze at the apex, none during fall.
+  if(flight){
+    const intensity=.35+.65*Math.sin(Math.PI*progress*.85);
+    ctx.save();ctx.globalCompositeOperation='screen';
+    for(let i=0;i<76;i++){
+      const a=i*2.3999632297+Math.sin(i*23)*.08;
+      const dist=25+((i*67+progress*3200)%Math.max(60,hh*.9));
+      const stretch=24+dist*.65;
+      const x=cx+Math.cos(a)*dist*.68,y=machineY+Math.sin(a)*dist*1.3;
+      const x2=cx+Math.cos(a)*(dist+stretch)*.68,y2=machineY+Math.sin(a)*(dist+stretch)*1.3;
+      ctx.strokeStyle=`rgba(${gold?'255,216,96':'178,235,255'},${(.16+(i%5)*.08)*intensity})`;
+      ctx.lineWidth=1+(i%4)*.65;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x2,y2);ctx.stroke();
+    }
+    // Repeated shock rings make the ascent feel violent without changing its duration.
+    for(let i=0;i<3;i++){
+      const t=(progress*8+i/3)%1,rr=24+t*w*.95;
+      ctx.strokeStyle=`rgba(255,${gold?'207,72':'245,245'},${(1-t)*.40})`;
+      ctx.lineWidth=(1-t)*10;ctx.beginPath();ctx.ellipse(cx,machineY,rr,rr*.4,0,0,Math.PI*2);ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.save();ctx.translate(cx,machineY);
+  const shake=flight?(1-progress)*3:0;
+  ctx.translate(Math.sin(progress*135)*shake,Math.cos(progress*171)*shake);
+  ctx.rotate(atApex?falling*falling*.42:Math.sin(progress*29)*.075);
+  if(flight){
+    const tail=ctx.createLinearGradient(0,20,0,190);
+    tail.addColorStop(0,gold?'#ffd857b0':'#ffb057c0');tail.addColorStop(1,'#ff581900');
+    ctx.fillStyle=tail;ctx.beginPath();ctx.moveTo(-32,25);ctx.lineTo(-11,200);ctx.lineTo(12,200);ctx.lineTo(32,25);ctx.fill();
+  }
+  ctx.shadowColor=gold?'#ffe168':'#ff4d61';ctx.shadowBlur=flight?28:7;
+  ctx.fillStyle='#171428';ctx.fillRect(-62,-45,124,98);
+  ctx.fillStyle=gold?'#ffd75b':'#ff5c77';ctx.fillRect(-56,-49,112,87);
+  ctx.fillStyle='#fff';ctx.fillRect(-44,-30,88,53);
+  ctx.shadowBlur=0;ctx.font='bold 31px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#ed2852';ctx.fillText('777',0,-1);
+  ctx.fillStyle='#ffc96e';ctx.fillRect(-39,30,78,7);ctx.restore();
+  ctx.fillStyle=vignette;ctx.fillRect(0,0,w,hh);
 }
-async function showResult(result){show('resultScreen');$('resultHeadline').textContent=result.is777?'BIG BONUS!':result.height===0?'何しに来たん？':'爆発成功！';$('resultHeight').textContent=result.height.toLocaleString();$('resultTitle').textContent=getTitle(result.height);$('resultDetail').textContent=result.height===0?'STOP操作なし！爆発したけど飛ばなかった。':result.allJust?'3本すべてJUST！伝説の100万m！':`777：${result.is777?'成立！':'不成立'} ／ JUST：${result.errors.filter(e=>e<=JUST).length}本`;refreshBest();sfx('result');$('rankStatus').textContent='ランキングを更新中…';$('shareXBtn').disabled=false;try{const r=await submitBest(result.height,getTitle(result.height));if(screen==='resultScreen')$('rankStatus').textContent=r.message}catch{if(screen==='resultScreen')$('rankStatus').textContent='通信できません。記録を保存し、次回起動時に再送します。'}}
+async function showResult(result){show('resultScreen');$('resultHeadline').textContent=result.is777?'BIG BONUS!':result.height===0?'何しに来たん？':'爆発成功！';$('resultHeight').textContent=result.height.toLocaleString();$('resultTitle').textContent=getTitle(result.height);$('resultDetail').textContent=result.height===0?'STOP操作なし！爆発したけど飛ばなかった。':result.allJust?'3本すべてJUST！伝説の100万m！':`777：${result.is777?'成立！':'不成立'} ／ JUST：${result.errors.filter(e=>e<=JUST).length}本`;refreshBest();sfx('result');$('rankStatus').textContent='ランキングを更新中…';$('shareXBtn').disabled=false;try{const r=await submitBest(result.height,getTitle(result.height));if(screen==='resultScreen')$('rankStatus').textContent=(r.message||'').includes('ローカルに記録しました')?'':r.message}catch{if(screen==='resultScreen')$('rankStatus').textContent='通信できません。記録を保存し、次回起動時に再送します。'}}
 const SNAP_MS=180, EXPLOSION_MS=1000;
 // An explosion takes over the entire game viewport for one full second.
 const explosionLayer=document.createElement('canvas');
@@ -104,38 +161,68 @@ function beginExplosion(result){
   show('flightScreen');explosionLayer.classList.add('visible');
   sfx('boom');if(result.is777)sfx('bonus');
   const begin=performance.now(),ctx=explosionLayer.getContext('2d');
+  const rand=i=>{const x=Math.sin(i*127.1+78.233)*43758.5453;return x-Math.floor(x)};
+  // Multi-layer fireballs, billowing smoke, sparks, debris and a pressure wave.
   function frame(now){
+    if(screen!=='flightScreen'){explosionLayer.classList.remove('visible');return}
     const p=Math.min(1,(now-begin)/EXPLOSION_MS),w=explosionLayer.clientWidth,h=explosionLayer.clientHeight;
     const dpr=Math.min(devicePixelRatio||1,2);
     if(explosionLayer.width!==Math.round(w*dpr)||explosionLayer.height!==Math.round(h*dpr)){
       explosionLayer.width=Math.round(w*dpr);explosionLayer.height=Math.round(h*dpr);
     }
     ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
-    const cx=w/2,cy=h*.45,shake=(1-p)*15;
-    ctx.save();ctx.translate(Math.sin(p*153)*shake,Math.cos(p*193)*shake);
-    ctx.fillStyle=result.is777?'#2b0d03':'#200a1b';ctx.fillRect(-20,-20,w+40,h+40);
-    const radius=Math.max(w,h)*(0.25+p*1.5);
-    const glow=ctx.createRadialGradient(cx,cy,5,cx,cy,radius);
-    glow.addColorStop(0,'#fffef0');glow.addColorStop(.14,result.is777?'#fff5a3':'#fff1d1');
-    glow.addColorStop(.42,result.is777?'#ffbd18':'#ff7e16');
-    glow.addColorStop(.72,'#ed2414');glow.addColorStop(1,'#3c0915');
-    ctx.fillStyle=glow;ctx.fillRect(-20,-20,w+40,h+40);
-    for(let i=0;i<110;i++){
-      const a=i*2.3999632297,dist=(.12+p*1.4)*Math.max(w,h)*(0.15+(i%17)/17);
-      const x=cx+Math.cos(a)*dist,y=cy+Math.sin(a)*dist;
-      ctx.strokeStyle=i%3===0?'#fff9d0':i%3===1?'#ffb32b':'#ff4627';
-      ctx.lineWidth=2+(i%5);ctx.beginPath();ctx.moveTo(x,y);
-      ctx.lineTo(x+Math.cos(a)*(12+25*p),y+Math.sin(a)*(12+25*p));ctx.stroke();
+    const cx=w/2,cy=h*.46,R=Math.max(w,h);
+    const shake=(1-p)*19;
+    ctx.save();ctx.translate(Math.sin(p*192)*shake,Math.cos(p*253)*shake);
+    ctx.fillStyle='#09070e';ctx.fillRect(-25,-25,w+50,h+50);
+    // Dark smoke behind the hot expanding fireball.
+    for(let i=0;i<95;i++){
+      const a=i*2.3999632297+rand(i)*.9;
+      const r=R*(.02+p*(.23+rand(i+91)*.72));
+      const x=cx+Math.cos(a)*r,y=cy+Math.sin(a)*r;
+      const size=R*(.035+rand(i+12)*.12)*(1+p*.6);
+      const g=ctx.createRadialGradient(x,y,0,x,y,size);
+      g.addColorStop(0,`rgba(72,53,53,${.5*(1-p*.4)})`);
+      g.addColorStop(.6,`rgba(37,32,38,${.55*(1-p*.3)})`);g.addColorStop(1,'#17131b00');
+      ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,size,0,Math.PI*2);ctx.fill();
     }
-    ctx.textAlign='center';ctx.textBaseline='middle';
-    ctx.shadowColor='#ff4b00';ctx.shadowBlur=30;
-    ctx.font=`1000 ${Math.min(w*.17,72)}px system-ui`;
-    ctx.lineWidth=7;ctx.strokeStyle='#8b1700';ctx.strokeText('大爆発!!',cx,cy,w*.95);
-    ctx.fillStyle='#fff7b6';ctx.fillText('大爆発!!',cx,cy,w*.95);
+    // Irregular flame tongues and molten core; avoid a flat single gradient.
+    ctx.globalCompositeOperation='screen';
+    for(let i=0;i<80;i++){
+      const a=i*2.3999632297+rand(i+7)*.55;
+      const spread=R*(.05+p*(.08+rand(i+50)*.8));
+      const x=cx+Math.cos(a)*spread,y=cy+Math.sin(a)*spread;
+      const size=R*(.02+rand(i+5)*.10)*(1+p*.5);
+      const hot=rand(i+15)>.56;
+      const g=ctx.createRadialGradient(x,y,0,x,y,size);
+      g.addColorStop(0,hot?'rgba(255,255,220,.96)':'rgba(255,185,38,.92)');
+      g.addColorStop(.42,hot?'rgba(255,174,23,.84)':'rgba(245,69,15,.83)');
+      g.addColorStop(1,'rgba(151,20,9,0)');
+      ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,size,0,Math.PI*2);ctx.fill();
+    }
+    const coreR=R*(.14+.22*Math.min(1,p*2.3));
+    const core=ctx.createRadialGradient(cx,cy,0,cx,cy,coreR);
+    core.addColorStop(0,p<.25?'#ffffff':'#fff4bb');
+    core.addColorStop(.27,'#fff4a6');core.addColorStop(.58,'#ffac20b8');core.addColorStop(1,'#ff330000');
+    ctx.fillStyle=core;ctx.fillRect(-25,-25,w+50,h+50);
+    // Supersonic expanding ring and dense directional spark trails.
+    const ring=R*(.07+p*1.1);
+    ctx.strokeStyle=`rgba(255,236,180,${(1-p)*.95})`;ctx.lineWidth=(1-p)*19+1;
+    ctx.beginPath();ctx.arc(cx,cy,ring,0,Math.PI*2);ctx.stroke();
+    for(let i=0;i<200;i++){
+      const a=i*2.3999632297,rad=R*(.05+p*(.18+rand(i+66)*1.4));
+      const x=cx+Math.cos(a)*rad,y=cy+Math.sin(a)*rad;
+      const length=(8+rand(i+24)*55)*(1+p*1.4);
+      ctx.strokeStyle=i%4===0?'#fff9c4':i%4===1?'#ffd15c':i%4===2?'#ff7b26':'#ff3e1b';
+      ctx.lineWidth=.8+rand(i+36)*3.5;ctx.beginPath();ctx.moveTo(x,y);
+      ctx.lineTo(x+Math.cos(a)*length,y+Math.sin(a)*length);ctx.stroke();
+    }
+    ctx.globalCompositeOperation='source-over';
+    // The full-screen blast remains visible for the entire requested second.
+    if(p<.18){ctx.fillStyle=`rgba(255,255,245,${(.18-p)*2.5})`;ctx.fillRect(-25,-25,w+50,h+50)}
     ctx.restore();
     if(p<1){explosionRaf=requestAnimationFrame(frame)}else{
       explosionLayer.classList.remove('visible');
-      // BIG BONUS banner appears AFTER the full-screen explosion, on the ascent scene.
       document.getElementById('bigBanner').classList.toggle('visible',result.is777);
       beginFlight(result);
     }
