@@ -33,3 +33,5 @@
 .rank-me{border:2px solid #ffd773!important}
 .rank-item span{overflow-wrap:anywhere;min-width:0}
 .rank-form button:disabled{opacity:.65;cursor:default}
+
+.rank-consent a{color:inherit;text-decoration:underline;text-underline-offset:2px}
