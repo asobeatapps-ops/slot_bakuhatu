@@ -1,15 +1,17 @@
-import {firebaseConfigured,submitBest,loadTop,updateDisplayName,flushPending} from './ranking.js';
+import {leaderboard} from './ranking.js';
+import {createLeaderboardUI} from './leaderboard-ui.js';
 const $=id=>document.getElementById(id), SYMBOLS=['7','BAR','🔔','🍒','🍉'], PERIOD=800, STEP=160, LIMIT=15000, JUST=5;
 const TITLES=[[10,'ただの爆発好き'],[100,'ご近所迷惑'],[500,'屋根より高いスロット'],[1000,'雲に謝れ'],[3000,'飛びすぎ注意報'],[5000,'天空の無職'],[8000,'地球から出禁'],[10000,'空気がないんだが'],[25000,'宇宙に不法侵入'],[50000,'NASA困惑'],[100000,'宇宙でもパチスロ'],[200000,'地球を置いてきた'],[400000,'月にパチ屋を建てる男'],[700000,'宇宙の問題児'],[1000000,'神すら目押しで超えた']];
 const getTitle=h=>h===0?'何しに来たん？':TITLES.reduce((a,x)=>h>=x[0]?x[1]:a,TITLES[0][1]);
 const localBest=()=>Number(localStorage.getItem('slotBest')||0);
 let sound=localStorage.getItem('slotSound')!=='off',audioCtx=null,screen='titleScreen',state=null,raf=0,flightRaf=0,lastFrame=0;
 let lastResult=null,backFromRank='titleScreen',finishTimer=0,explosionRaf=0;
+const rankUI=createLeaderboardUI({api:leaderboard,formatScore:score=>score.toLocaleString('ja-JP')+'m',open:()=>show('rankingScreen'),close:()=>show(backFromRank)});
 function tone(freq,duration,type='sine',volume=.12,delay=0){if(!sound)return;try{audioCtx??=new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();const osc=audioCtx.createOscillator(),gain=audioCtx.createGain(),t=audioCtx.currentTime+delay;osc.type=type;osc.frequency.setValueAtTime(freq,t);gain.gain.setValueAtTime(volume,t);gain.gain.exponentialRampToValueAtTime(.0001,t+duration);osc.connect(gain).connect(audioCtx.destination);osc.start(t);osc.stop(t+duration+.02)}catch{}}
 function sfx(name){if(name==='stop')tone(240,.1,'square',.09);if(name==='just'){tone(780,.3,'triangle',.14);tone(1180,.2,'sine',.1,.08)}if(name==='boom'){tone(100,.8,'sawtooth',.2);tone(56,.7,'triangle',.18)}if(name==='bonus'){[660,880,1100,1440].forEach((n,i)=>tone(n,.18,'triangle',.12,i*.12))}if(name==='result')tone(660,.2,'triangle',.12)}
 function show(id){screen=id;document.querySelectorAll('.screen').forEach(el=>el.classList.toggle('active',el.id===id));}
 function refreshBest(){$('titleBest').textContent=localStorage.getItem('slotHasBest')?localBest().toLocaleString()+'m':'—';$('hudBest').textContent=localBest().toLocaleString()+'m'}
-function init(){refreshBest();$('soundBtn').textContent=sound?'♪ ON':'♪ OFF';$('playerName').value=localStorage.getItem('slotName')||'';flushPending().catch(()=>{});show('titleScreen')}
+function init(){refreshBest();$('soundBtn').textContent=sound?'♪ ON':'♪ OFF';show('titleScreen')}
 function phase(t){return ((t%PERIOD)+PERIOD)%PERIOD}
 function delta7(t){const p=phase(t);return Math.min(p,PERIOD-p)}
 function symbolIndex(t){const p=phase(t);return Math.floor((p+STEP/2)/STEP)%5}
@@ -218,7 +220,7 @@ function drawFlight(ctx,canvas,p,h,total,gold,falling=0,atApex=false){
   ctx.fillStyle='#ffc96e';ctx.fillRect(-39,30,78,7);ctx.restore();
   ctx.fillStyle=vignette;ctx.fillRect(0,0,w,hh);
 }
-async function showResult(result){show('resultScreen');$('resultHeadline').textContent=result.is777?'BIG BONUS!':result.height===0?'何しに来たん？':'爆発成功！';$('resultHeight').textContent=result.height.toLocaleString();$('resultTitle').textContent=getTitle(result.height);$('resultDetail').textContent=result.height===0?'STOP操作なし！爆発したけど飛ばなかった。':result.allJust?'3本すべてJUST！伝説の100万m！':`777：${result.is777?'成立！':'不成立'} ／ JUST：${result.errors.filter(e=>e<=JUST).length}本`;refreshBest();sfx('result');$('rankStatus').textContent='ランキングを更新中…';$('shareXBtn').disabled=false;try{const r=await submitBest(result.height,getTitle(result.height));if(screen==='resultScreen')$('rankStatus').textContent=(r.message||'').includes('ローカルに記録しました')?'':r.message}catch{if(screen==='resultScreen')$('rankStatus').textContent='通信できません。記録を保存し、次回起動時に再送します。'}}
+function showResult(result){show('resultScreen');$('resultHeadline').textContent=result.is777?'BIG BONUS!':result.height===0?'何しに来たん？':'爆発成功！';$('resultHeight').textContent=result.height.toLocaleString();$('resultTitle').textContent=getTitle(result.height);$('resultDetail').textContent=result.height===0?'STOP操作なし！爆発したけど飛ばなかった。':result.allJust?'3本すべてJUST！伝説の100万m！':`777：${result.is777?'成立！':'不成立'} ／ JUST：${result.errors.filter(e=>e<=JUST).length}本`;refreshBest();sfx('result');$('shareXBtn').disabled=false;rankUI.setResult(result.height);}
 const SNAP_MS=180, EXPLOSION_MS=1000;
 // An explosion takes over the entire game viewport for one full second.
 const explosionLayer=document.createElement('canvas');
@@ -347,6 +349,6 @@ $('shareXBtn').onclick=()=>{
   url.searchParams.set('url','https://asobeatapps-ops.github.io/slot_bakuhatu/');
   window.open(url.toString(),'_blank','noopener,noreferrer');
 };document.querySelectorAll('.stop').forEach(b=>b.addEventListener('pointerdown',e=>{e.preventDefault();stop(Number(b.dataset.reel))}));$('homeBtn').onclick=()=>{show('titleScreen');refreshBest()};$('soundBtn').onclick=()=>{sound=!sound;localStorage.setItem('slotSound',sound?'on':'off');$('soundBtn').textContent=sound?'♪ ON':'♪ OFF'};
-async function showRank(from){backFromRank=from;show('rankingScreen');$('rankingList').textContent='読み込み中…';$('rankingNote').textContent=firebaseConfigured()?'オンラインランキング':'Firebase未設定：ローカル記録のみ利用できます。';try{const list=await loadTop();$('rankingList').replaceChildren();if(!list.length){$('rankingList').textContent='ランキング記録はまだありません。';return}list.forEach((x,i)=>{const row=document.createElement('div');row.className='rank-item';const pos=document.createElement('strong'),name=document.createElement('span'),height=document.createElement('b');pos.textContent=String(i+1);name.textContent=x.name||'匿名プレイヤー';height.textContent=Number(x.bestHeight).toLocaleString()+'m';row.append(pos,name,height);$('rankingList').append(row)})}catch{$('rankingList').textContent='ランキングを取得できませんでした。'}}
-$('titleRankBtn').onclick=()=>showRank('titleScreen');$('resultRankBtn').onclick=()=>showRank('resultScreen');$('rankBackBtn').onclick=()=>show(backFromRank);$('saveNameBtn').onclick=async()=>{const name=$('playerName').value.trim().slice(0,16)||'匿名プレイヤー';localStorage.setItem('slotName',name);$('rankingNote').textContent='名前を保存しました。';try{await updateDisplayName(name)}catch{};showRank(backFromRank)};
+function showRank(from){backFromRank=from;rankUI.open()}
+$('titleRankBtn').onclick=()=>showRank('titleScreen');$('resultRankBtn').onclick=()=>showRank('resultScreen');
 init();
