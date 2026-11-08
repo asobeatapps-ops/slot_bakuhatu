@@ -2,6 +2,13 @@
 
 このゲーム専用の**新しいFirebaseプロジェクト**を使います。他のゲームの既存プロジェクトやルールは変更しません。ChatGPTのFirebaseプラグインは必須ではありません。
 
+## 接続先（作成済み）
+
+- プロジェクトID：`asobeat-slot-ranking`
+- WebアプリID：`1:80353228853:web:d32b8ca4235529cc18197c`
+- Web設定は `firebase-config.js` に反映済み。以下の作成手順を再実行する必要はありません。
+- 匿名認証・Firestore・ルール・インデックスの本番設定はまだ未確認です。
+
 ## 1. プロジェクトとWebアプリを作る
 
 1. https://console.firebase.google.com/ をGoogleアカウントで開き、「プロジェクトを作成」を選びます。
@@ -14,7 +21,7 @@
 
 ## 2. 匿名認証
 
-Authentication → 始める → ログイン方法 → **匿名**を有効にします。設定の承認済みドメインには `asobeatapps-ops.github.io` を追加します。ローカル実機確認を行う場合のみ、必要なローカルドメインも追加します。
+このディレクトリで `npx -y firebase-tools@latest deploy --only auth --project asobeat-slot-ranking` を実行すると、用意した `firebase.json` に従って匿名認証を有効にできます。管理画面の場合は Authentication → 始める → ログイン方法 → **匿名**を有効にします。設定の承認済みドメインには `asobeatapps-ops.github.io` を追加します。ローカル実機確認を行う場合のみ、必要なローカルドメインも追加します。
 
 プレイヤーは会員登録やGoogleログインをせずに参加できます。同じブラウザで1ユーザーとなり、別端末やブラウザデータ削除後は別ユーザーになります。
 
