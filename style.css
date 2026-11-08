@@ -23,3 +23,13 @@
 .ad-caption{display:block;font-size:10px;letter-spacing:.12em;color:#b3b0c8;margin:0 0 12px}
 .ad-content{min-height:90px;display:flex;align-items:center;justify-content:center}
 @media (max-width:340px){.other-games-btn{font-size:13px}}
+
+/* Public ranking registration (gameplay layout is unchanged). */
+.rank-form{width:100%;box-sizing:border-box;margin:18px 0;padding:16px;border:1px solid #7b709d;border-radius:14px;text-align:left;background:#17162c}
+.rank-form label{display:block;font-size:13px;font-weight:700;margin-bottom:8px}
+.rank-form input{box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:10px;border:1px solid #998bb8;border-radius:8px;background:#fff;color:#242034;font:inherit}
+.rank-form button{width:100%;margin-top:10px}
+.rank-consent,#rankStatus{font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.rank-me{border:2px solid #ffd773!important}
+.rank-item span{overflow-wrap:anywhere;min-width:0}
+.rank-form button:disabled{opacity:.65;cursor:default}

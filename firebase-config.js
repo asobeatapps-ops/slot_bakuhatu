@@ -1,5 +1,4 @@
-// Firebaseコンソールで発行されたWebアプリ設定をここに記入してください。
-// 設定がない間も、ゲーム本体とローカルベストは動作します。
+// slot_bakuhatu 専用の新しいFirebase Webアプリ設定。もう一方のゲームと別プロジェクトを使います。
 export const firebaseConfig = {
   apiKey: '',
   authDomain: '',
