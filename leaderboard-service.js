@@ -3,21 +3,21 @@ async function loadFirebase() {
   const modules = await Promise.all([
     import('https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js'),
     import('https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js'),
-    import('https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js')
+    import('https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore-lite.js')
   ]);
   return Object.assign({}, ...modules);
 }
 
 export function createLeaderboard({config, gameId, maxScore, loadSDK=loadFirebase,
-  storage, timeoutMs=12000}) {
+  storage, timeoutMs=12000, scoreAllowed=()=>true, now=()=>Date.now()}) {
   try { storage ??= globalThis.localStorage; } catch {}
   const prefix=`asobeat-ranking:${config.projectId || 'unconfigured'}:${gameId}:`;
   let ready, signingIn, submitting;
   const configured=()=>['apiKey','authDomain','projectId','appId'].every(key=>typeof config[key]==='string'&&config[key].trim());
   const read=key=>{try{return JSON.parse(storage.getItem(prefix+key)||'null')}catch{return null}};
   const write=(key,value)=>{try{storage.setItem(prefix+key,JSON.stringify(value));return true}catch{return false}};
-  const normalizeName=value=>String(value||'').replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,16)||'匿名プレイヤー';
-  const validScore=score=>Number.isSafeInteger(score)&&score>=0&&score<=maxScore;
+  const normalizeName=value=>String(value||'').replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g,'').trim().slice(0,16).replace(/[\ud800-\udbff]$/,'')||'匿名プレイヤー';
+  const validScore=score=>Number.isSafeInteger(score)&&score>=0&&score<=maxScore&&scoreAllowed(score);
   const name=()=>normalizeName(read('name'));
   function deadline(promise) {
     let timer;
@@ -43,14 +43,30 @@ export function createLeaderboard({config, gameId, maxScore, loadSDK=loadFirebas
   async function send(record) {
     const s=await services(),uid=await identify(s);
     const ref=s.sdk.doc(s.db,'leaderboard',uid);
+    const guardRef=s.sdk.doc(s.db,'submissionLocks',uid);
+    // Compatibility during deployment: the original rules deny this private path.
+    // Once the guarded rules are deployed, all writes require the atomic lock.
+    // A failed guarded transaction is NEVER retried using the legacy protocol.
+    let guarded=true;
+    try { await s.sdk.getDoc(guardRef); }
+    catch(error) { if(error.code==='permission-denied')guarded=false;else throw error; }
     const result=await s.sdk.runTransaction(s.db,async transaction=>{
       const snapshot=await transaction.get(ref),previous=snapshot.exists()?snapshot.data():null;
       const improved=!previous||record.score>previous.score;
       const best=improved?record.score:previous.score;
-      if(improved||previous.name!==record.name)transaction.set(ref,{
-        name:record.name,score:best,
-        achievedAt:improved?s.sdk.serverTimestamp():previous.achievedAt
-      });
+      if(improved||previous.name!==record.name) {
+        if(guarded) {
+          const guard=await transaction.get(guardRef);
+          const last=guard.exists()?guard.data().lastSubmittedAt:null;
+          const retryAfterMs=last?last.toMillis()+10000-now():0;
+          if(retryAfterMs>0)throw Object.assign(new Error('登録間隔が短すぎます。'),{code:'ranking/rate-limited',retryAfterMs});
+        }
+        transaction.set(ref,{
+          name:record.name,score:best,
+          achievedAt:improved?s.sdk.serverTimestamp():previous.achievedAt
+        });
+        if(guarded)transaction.set(guardRef,{lastSubmittedAt:s.sdk.serverTimestamp()});
+      }
       return {uid,name:record.name,score:best,improved};
     },{maxAttempts:3});
     const pending=read('pending');
@@ -82,6 +98,7 @@ export function createLeaderboard({config, gameId, maxScore, loadSDK=loadFirebas
   function publicError(error) {
     if(error?.code==='ranking/unconfigured')return 'オンラインランキングは準備中です。端末内の自己ベストは引き続き利用できます。';
     if(error?.code==='ranking/invalid-score')return error.message;
+    if(error?.code==='ranking/rate-limited')return '連続登録を防ぐため、あと'+Math.max(1,Math.ceil(error.retryAfterMs/1000))+'秒ほど待ってから「再試行」を押してください。';
     if(/permission-denied|failed-precondition|operation-not-allowed|api-key|unauthorized-domain/.test(error?.code||''))return '現在ランキングを利用できません。しばらくしてから再試行してください。';
     return error?.queued?'通信できませんでした。送信待ちの記録をこのブラウザに保存しました。「再試行」で登録できます。':'通信できませんでした。ネット接続を確認して再試行してください。';
   }

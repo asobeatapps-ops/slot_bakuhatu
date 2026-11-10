@@ -1,26 +1,34 @@
+import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createLeaderboard} from '../leaderboard-service.js';
 
 const config={apiKey:'test',authDomain:'demo.test',projectId:'demo-slot',appId:'test-app'};
-function client(cloud,uid,{storage=new Map(),maxScore=1000000,timeoutMs=1000}={}) {
-  const state={offline:false,writes:0};
+function client(cloud,uid,{storage=new Map(),maxScore=1000000,timeoutMs=1000,scoreAllowed=()=>true}={}) {
+  const state={offline:false,writes:0,advance:11000,guarded:true,denyWrites:false,attempts:0};
   const auth={currentUser:null,authStateReady:async()=>{}};
   const sdk={getApps:()=>[],initializeApp:()=>({}),getAuth:()=>auth,getFirestore:()=>({}),
     signInAnonymously:async()=>{auth.currentUser={uid};return {user:{uid}}},
-    doc:(_,__,id)=>id,serverTimestamp:()=>({time:++cloud.clock}),
+    doc:(_,collection,id)=>({collection,id}),serverTimestamp:()=>({time:cloud.clock,toMillis(){return this.time}}),
+    getDoc:async ref=>{if(!state.guarded)throw Object.assign(new Error('old rules'),{code:'permission-denied'});return {exists:()=>cloud.locks.has(ref.id),data:()=>cloud.locks.get(ref.id)};},
     runTransaction:async(_,fn)=>{
       if(state.offline)throw Object.assign(new Error('offline'),{code:'unavailable'});
-      return fn({get:async id=>({exists:()=>cloud.rows.has(id),data:()=>cloud.rows.get(id)}),set:(id,value)=>{state.writes++;cloud.rows.set(id,value)}});
+      state.attempts++;cloud.clock+=state.advance;
+      const writes=[];const table=ref=>ref.collection==='leaderboard'?cloud.rows:cloud.locks;
+      const result=await fn({get:async ref=>({exists:()=>table(ref).has(ref.id),data:()=>table(ref).get(ref.id)}),set:(ref,value)=>writes.push([ref,value])});
+      if(state.denyWrites)throw Object.assign(new Error('denied'),{code:'permission-denied'});
+      for(const [ref,value]of writes){if(ref.collection==='leaderboard')state.writes++;table(ref).set(ref.id,value);}
+      return result;
     },collection:()=>({}),orderBy:()=>({}),limit:()=>({}),query:()=>({}),
     getDocs:async()=>{
       if(state.offline)throw Object.assign(new Error('offline'),{code:'unavailable'});
       return {docs:[...cloud.rows].sort((a,b)=>b[1].score-a[1].score||a[1].achievedAt.time-b[1].achievedAt.time).slice(0,100).map(([id,value])=>({id,data:()=>value}))};
     }};
   const local={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
-  return {api:createLeaderboard({config,gameId:'slot',maxScore,loadSDK:async()=>sdk,storage:local,timeoutMs}),state,storage};
+  return {api:createLeaderboard({config,gameId:'slot',maxScore,loadSDK:async()=>sdk,storage:local,timeoutMs,scoreAllowed,now:()=>cloud.clock}),state,storage};
 }
-const cloud=()=>({rows:new Map(),clock:0});
+const cloud=()=>({rows:new Map(),locks:new Map(),clock:0});
 
 test('two users share a ranking; each keeps one best; name changes retain tie time',async()=>{
   const db=cloud(),a=client(db,'alice'),b=client(db,'bob');
@@ -63,4 +71,48 @@ test('unconfigured clients never initialize Firebase or claim registration succe
 test('loading has a timeout instead of leaving an infinite spinner',async()=>{
   const api=createLeaderboard({config,gameId:'test',maxScore:1,loadSDK:()=>new Promise(()=>{}),storage:null,timeoutMs:5});
   await assert.rejects(api.loadTop(),error=>error.code==='ranking/timeout');
+});
+
+test('server lock cooldown preserves pending best and allows no-op without writes',async()=>{
+  const db=cloud(),a=client(db,'alice');a.state.advance=0;
+  await a.api.submitBest(100,'Alice');
+  await a.api.submitBest(50,'Alice');assert.equal(a.state.writes,1);
+  await assert.rejects(a.api.submitBest(200,'Alice'),e=>e.code==='ranking/rate-limited'&&e.queued===true&&/10秒/.test(a.api.publicError(e)));
+  assert.equal(db.rows.get('alice').score,100);assert.equal(a.state.writes,1);
+  db.clock+=10000;await a.api.submitBest(50,'Alice');assert.equal(db.rows.get('alice').score,200);
+  assert.equal(a.state.writes,2);
+});
+test('a denied guarded write never retries an unguarded transaction',async()=>{
+  const a=client(cloud(),'alice');a.state.denyWrites=true;
+  await assert.rejects(a.api.submitBest(10,'Alice'),e=>e.code==='permission-denied');
+  assert.equal(a.state.attempts,1);assert.equal(a.state.writes,0);
+});
+test('old rules remain compatible until guarded rules are deployed',async()=>{
+  const db=cloud(),a=client(db,'alice');a.state.guarded=false;
+  await a.api.submitBest(10,'Alice');assert.equal(db.rows.get('alice').score,10);assert.equal(db.locks.size,0);
+  a.state.guarded=true;await a.api.submitBest(20,'Alice');assert.equal(db.rows.get('alice').score,20);assert.equal(db.locks.size,1);
+});
+test('names exclude control and invisible direction characters without splitting emoji',async()=>{
+  const db=cloud(),a=client(db,'alice');await a.api.submitBest(10,' \u202e\u200b'+'😀'.repeat(17)+'\n ');
+  assert.equal(db.rows.get('alice').name,'😀'.repeat(8));
+});
+test('slot validates the mathematical score gap while preserving genuine maximum',async()=>{
+  const allowed=score=>score===0||(score>=10&&(score<=938793||score===1000000));
+  const a=client(cloud(),'alice',{scoreAllowed:allowed});
+  for(const score of [1,9,938794,999999])assert.equal(a.api.validScore(score),false);
+  for(const score of [0,10,938793,1000000])assert.equal(a.api.validScore(score),true);
+  assert.equal(Math.round(1000000*(1-5/240)**3),938793);
+});
+
+test('actual slot calculation always fits the allowed score ranges',()=>{
+  const source=readFileSync(new URL('../game.js',import.meta.url),'utf8');
+  const code=source.match(/^function (phase|delta7|symbolIndex|calculate)\(.*$/gm).join('\n');
+  const context={PERIOD:800,STEP:160,JUST:5,state:null};runInNewContext(code,context);
+  let seed=1234567;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296};
+  const times=[0,5,5.00000001,79.999,80,400,795,800,15000];
+  for(let i=0;i<20000;i++){
+    context.state={manual:i%4,stops:Array.from({length:3},()=>({t:i<times.length?times[i]:random()*15000}))};
+    const score=context.calculate().height;
+    assert.ok(score===0||(score>=10&&(score<=938793||score===1000000)),'legitimate score rejected: '+score);
+  }
 });

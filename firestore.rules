@@ -1,25 +1,57 @@
+// Public leaderboard: name (1..16 chars), integer score, achievedAt (server timestamp).
+// Private submissionLocks/{uid}: lastSubmittedAt (server timestamp only).
+// The private lock and a changed leaderboard record must be written atomically.
+// No client can delete its lock to reset the server-enforced 10 second cooldown.
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function owner(userId) { return request.auth != null && request.auth.uid == userId; }
+    function validName(name) {
+      return name is string && name.size() >= 1 && name.size() <= 16
+        && name.matches('.*[^\\s].*')
+        && !name.matches('.*[\\x00-\\x1F\\x7F\\x{200B}-\\x{200F}\\x{202A}-\\x{202E}\\x{2066}-\\x{2069}\\x{FEFF}].*');
+    }
+    function validRecord(d) {
+      return d.keys().hasAll(['name','score','achievedAt'])
+        && d.keys().hasOnly(['name','score','achievedAt'])
+        && validName(d.name) && d.score is int && (d.score == 0 || (d.score >= 10 && (d.score <= 938793 || d.score == 1000000)))
+        && d.achievedAt is timestamp;
+    }
+    function cooledDown(userId) {
+      let path = /databases/$(database)/documents/submissionLocks/$(userId);
+      return !exists(path) || request.time >= get(path).data.lastSubmittedAt + duration.value(10,'s');
+    }
+    function hasAtomicLock(userId) {
+      return cooledDown(userId)
+        && getAfter(/databases/$(database)/documents/submissionLocks/$(userId)).data.lastSubmittedAt == request.time;
+    }
+    function validLock(d) {
+      return d.keys().hasAll(['lastSubmittedAt']) && d.keys().hasOnly(['lastSubmittedAt'])
+        && d.lastSubmittedAt is timestamp && d.lastSubmittedAt == request.time;
+    }
+    function pairedRecordChanged(userId) {
+      let path = /databases/$(database)/documents/leaderboard/$(userId);
+      let after = getAfter(path).data;
+      return validRecord(after) && (!exists(path) || after != get(path).data);
+    }
     match /leaderboard/{userId} {
-      function owner() { return request.auth != null && request.auth.uid == userId; }
-      function valid() {
-        let d = request.resource.data;
-        return d.keys().hasAll(['name', 'score', 'achievedAt'])
-          && d.keys().hasOnly(['name', 'score', 'achievedAt'])
-          && d.name is string && d.name.size() >= 1 && d.name.size() <= 16
-          && d.score is int && d.score >= 0 && d.score <= 1000000
-          && d.achievedAt is timestamp;
-      }
+      // Existing site intentionally publishes display names and best scores.
       allow get: if true;
-      allow list: if request.query.limit != null && request.query.limit <= 100;
-      allow create: if owner() && valid() && request.resource.data.achievedAt == request.time;
-      allow update: if owner() && valid() && (
-        (request.resource.data.score > resource.data.score
-          && request.resource.data.achievedAt == request.time)
-        || (request.resource.data.score == resource.data.score
-          && request.resource.data.achievedAt == resource.data.achievedAt)
-      );
+      allow list: if request.query.limit != null && request.query.limit > 0 && request.query.limit <= 100;
+      allow create: if owner(userId) && validRecord(request.resource.data)
+        && request.resource.data.achievedAt == request.time && hasAtomicLock(userId);
+      allow update: if owner(userId) && validRecord(request.resource.data)
+        && (request.resource.data.name != resource.data.name || request.resource.data.score > resource.data.score)
+        && ((request.resource.data.score > resource.data.score && request.resource.data.achievedAt == request.time)
+          || (request.resource.data.score == resource.data.score && request.resource.data.achievedAt == resource.data.achievedAt))
+        && hasAtomicLock(userId);
+      allow delete: if false;
+    }
+    match /submissionLocks/{userId} {
+      allow get: if owner(userId);
+      allow list: if false;
+      allow create, update: if owner(userId) && validLock(request.resource.data)
+        && cooledDown(userId) && pairedRecordChanged(userId);
       allow delete: if false;
     }
   }
